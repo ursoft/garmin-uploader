@@ -8,7 +8,46 @@ from garmin_uploader import (
 )
 from garmin_uploader.user import User
 from garmin_uploader.api import GarminAPI, GarminAPIException
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service
+from webdriver_manager.chrome import ChromeDriverManager
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 
+JS_DROP_FILE = """
+    var target = arguments[0],
+        offsetX = arguments[1],
+        offsetY = arguments[2],
+        document = target.ownerDocument || document,
+        window = document.defaultView || window;
+
+    var input = document.createElement('INPUT');
+    input.type = 'file';
+    input.onchange = function () {
+      var rect = target.getBoundingClientRect(),
+          x = rect.left + (offsetX || (rect.width >> 1)),
+          y = rect.top + (offsetY || (rect.height >> 1)),
+          dataTransfer = { files: this.files };
+
+      ['dragenter', 'dragover', 'drop'].forEach(function (name) {
+        var evt = document.createEvent('MouseEvent');
+        evt.initMouseEvent(name, !0, !0, window, 0, 0, 0, x, y, !1, !1, !1, !1, 0, null);
+        evt.dataTransfer = dataTransfer;
+        target.dispatchEvent(evt);
+      });
+
+      setTimeout(function () { document.body.removeChild(input); }, 25);
+    };
+    document.body.appendChild(input);
+    return input;
+"""
+
+def drag_and_drop_file(drop_target, path):
+    driver = drop_target.parent
+    file_input = driver.execute_script(JS_DROP_FILE, drop_target, 0, 0)
+    file_input.send_keys(path)
 
 class Activity(object):
     """
@@ -219,16 +258,56 @@ class Workflow():
         return activities
 
     def run(self):
-        """
-        Authenticated part of the workflow
-        Simply login & upload every activity
-        """
-        if not self.user.authenticate():
-            raise Exception('Invalid credentials')
+        options = Options()
+        options.headless = False #otherwise 403
+        options.add_argument("--window-size=1920,1200")
+        driver = webdriver.Chrome(options=options, service=Service(ChromeDriverManager().install()))
+        driver.minimize_window()
+        try:
+            driver.get("https://connect.garmin.com/modern/import-data")
+            WebDriverWait(driver, 10).until(
+                EC.presence_of_element_located((By.ID, "gauth-widget-frame-gauth-widget"))
+            )
+            driver.switch_to.frame(0)
+            username_e = WebDriverWait(driver, 10).until(
+                EC.presence_of_element_located((By.ID, "username"))
+            )
+            pwd_e = WebDriverWait(driver, 1).until(
+                EC.presence_of_element_located((By.ID, "password"))
+            )
+            btn_e = WebDriverWait(driver, 1).until(
+                EC.presence_of_element_located((By.ID, "login-btn-signin"))
+            )
+            
+            """
+            Authenticated part of the workflow
+            Simply login & upload every activity
+            """
+            username_e.send_keys(self.user.username)
+            pwd_e.send_keys(self.user.password)
+            btn_e.click()
 
-        for activity in self.activities:
-            self.rate_limit()
-            activity.upload(self.user)
+            drag_n_drop = WebDriverWait(driver, 10).until(
+                EC.presence_of_element_located((By.ID, 'import-data'))
+            )
+
+            for activity in self.activities:
+                self.rate_limit()
+                drag_and_drop_file(drag_n_drop, activity.path)
+
+            btn_e = WebDriverWait(driver, 1).until(
+                EC.element_to_be_clickable((By.ID, "import-data-start"))
+            )
+            btn_e.click()
+
+            while True:
+                result = WebDriverWait(driver, 1).until(
+                    EC.presence_of_element_located((By.CLASS_NAME, "dz-success-mark"))
+                )
+                if result.text > '':
+                    break
+        finally:
+            driver.quit()
 
         logger.info('All done.')
 
