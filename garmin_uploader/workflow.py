@@ -305,6 +305,13 @@ class Workflow():
                     EC.presence_of_element_located((By.CLASS_NAME, "dz-success-mark"))
                 )
                 if result.text > '':
+                    logger.info('success-mark: %s' % result.text)
+                    break
+                result = WebDriverWait(driver, 1).until(
+                    EC.presence_of_element_located((By.CLASS_NAME, "dz-error-message"))
+                )
+                if result.text > '':
+                    logger.fatal('error-message: %s' % result.text)
                     break
         finally:
             driver.quit()
